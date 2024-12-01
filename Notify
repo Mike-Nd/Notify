@@ -1,0 +1,123 @@
+# Python program for a musical note detector/tuner
+# Using Python for its excellent audio processing libraries and simplicity
+
+import numpy as np
+import pyaudio
+import scipy.signal
+from scipy.fft import fft
+import threading
+import time
+
+# Dictionary mapping frequencies to musical notes
+NOTE_FREQUENCIES = {
+    'C0': 16.35, 'C#0': 17.32, 'D0': 18.35, 'D#0': 19.45,
+    'E0': 20.60, 'F0': 21.83, 'F#0': 23.12, 'G0': 24.50,
+    'G#0': 25.96, 'A0': 27.50, 'A#0': 29.14, 'B0': 30.87,
+    # ... continues through octaves ...
+    'C8': 4186.01, 'C#8': 4434.92, 'D8': 4698.63, 'D#8': 4978.03
+}
+
+class PitchDetector:
+    def __init__(self):
+        # Audio configuration parameters
+        self.CHUNK = 4096        # Buffer size
+        self.RATE = 44100       # Sampling rate
+        self.CHANNELS = 1       # Mono audio
+        self.FORMAT = pyaudio.paFloat32
+        self.running = False
+        
+    def start_listening(self):
+        """Initialize and start audio stream"""
+        self.running = True
+        self.p = pyaudio.PyAudio()
+        self.stream = self.p.open(
+            format=self.FORMAT,
+            channels=self.CHANNELS,
+            rate=self.RATE,
+            input=True,
+            frames_per_buffer=self.CHUNK
+        )
+        
+        # Start processing in a separate thread
+        self.thread = threading.Thread(target=self._process_audio)
+        self.thread.start()
+
+    def _process_audio(self):
+        """Main audio processing loop"""
+        while self.running:
+            try:
+                # Read audio data
+                data = np.frombuffer(self.stream.read(self.CHUNK), dtype=np.float32)
+                
+                # Apply Hanning window to reduce spectral leakage
+                windowed_data = data * scipy.signal.hanning(len(data))
+                
+                # Perform FFT
+                fft_data = fft(windowed_data)
+                frequencies = np.fft.fftfreq(len(fft_data), 1.0/self.RATE)
+                
+                # Find dominant frequency
+                peak_frequency = self._find_peak_frequency(frequencies, fft_data)
+                
+                # Convert frequency to musical note
+                note = self._frequency_to_note(peak_frequency)
+                
+                # Calculate how in-tune the note is
+                cents = self._calculate_cents(peak_frequency, note)
+                
+                print(f"Note: {note}, Frequency: {peak_frequency:.1f}Hz, Cents: {cents:+.0f}")
+                
+            except Exception as e:
+                print(f"Error processing audio: {e}")
+                break
+
+    def _find_peak_frequency(self, frequencies, fft_data):
+        """Find the dominant frequency in the signal"""
+        # Get positive frequencies only
+        positive_frequencies = frequencies[:len(frequencies)//2]
+        positive_fft = np.abs(fft_data[:len(frequencies)//2])
+        
+        # Find peak frequency, ignoring very low frequencies (noise)
+        min_freq_idx = int(20 * len(frequencies) / self.RATE)
+        peak_idx = np.argmax(positive_fft[min_freq_idx:]) + min_freq_idx
+        return positive_frequencies[peak_idx]
+
+    def _frequency_to_note(self, frequency):
+        """Convert a frequency to the closest musical note"""
+        # Find the closest note by comparing frequencies
+        closest_note = min(NOTE_FREQUENCIES.items(), 
+                         key=lambda x: abs(frequency - x[1]))
+        return closest_note[0]
+
+    def _calculate_cents(self, frequency, note):
+        """Calculate how many cents sharp/flat the frequency is from the perfect note"""
+        perfect_freq = NOTE_FREQUENCIES[note]
+        cents = 1200 * np.log2(frequency / perfect_freq)
+        return cents
+
+    def stop(self):
+        """Clean up and stop audio processing"""
+        self.running = False
+        if hasattr(self, 'thread'):
+            self.thread.join()
+        if hasattr(self, 'stream'):
+            self.stream.stop_stream()
+            self.stream.close()
+        if hasattr(self, 'p'):
+            self.p.terminate()
+
+# Example usage
+if __name__ == "__main__":
+    try:
+        detector = PitchDetector()
+        print("Starting pitch detector... (Press Ctrl+C to stop)")
+        detector.start_listening()
+        
+        # Keep the main thread alive
+        while True:
+            time.sleep(0.1)
+            
+    except KeyboardInterrupt:
+        print("\nStopping pitch detector...")
+        detector.stop()
+
